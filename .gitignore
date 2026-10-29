@@ -1,0 +1,11 @@
+# Personal signing settings (your Team ID)
+Config/Local.xcconfig
+
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+# macOS clutter
+.DS_Store

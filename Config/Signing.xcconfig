@@ -1,0 +1,14 @@
+// Signing.xcconfig — how Xcode signs MCAS.
+//
+// Default: "Sign to Run Locally" (ad-hoc). Works with no Apple account at all.
+//
+// Downside of ad-hoc: macOS forgets the Accessibility permission after every
+// rebuild. Once we reach the paste step, we'll create Config/Local.xcconfig
+// with your free Personal Team. Local.xcconfig is git-ignored, so your Team ID
+// stays private.
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"
