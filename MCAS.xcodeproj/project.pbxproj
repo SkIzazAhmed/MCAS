@@ -163,7 +163,7 @@
 			mainGroup = 4D4341530000000000000002;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4D4341530000000000000003 /* Products */;
@@ -331,6 +331,7 @@
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2S2VWXA442;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = MCAS;
@@ -355,6 +356,7 @@
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2S2VWXA442;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -441,7 +443,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+		4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/groue/GRDB.swift";
 			requirement = {
@@ -454,7 +456,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		4D434153000000000000001A /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = 4D4341530000000000000019 /* XCRemoteSwiftPackageReference "GRDB" */;
 			productName = GRDB;
 		};
 /* End XCSwiftPackageProductDependency section */

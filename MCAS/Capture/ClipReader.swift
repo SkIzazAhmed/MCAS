@@ -14,6 +14,7 @@
 import AppKit
 import CryptoKit
 import ImageIO
+import UniformTypeIdentifiers
 
 enum ClipReader {
     /// Copies bigger than this are not saved (POC limit; v1.0 moves big data to files on disk).
@@ -56,10 +57,10 @@ enum ClipReader {
                 kind = .text
             }
             preview = String(string.prefix(1000))
-        } else if let imageData = first.data(forType: .png) ?? first.data(forType: .tiff) {
+        } else if let image = imageData(from: first, pasteboard: pasteboard, reps: &reps) {
             kind = .image
-            thumbnail = makeThumbnail(from: imageData)
-            if let size = pixelSize(of: imageData) {
+            thumbnail = makeThumbnail(from: image)
+            if let size = pixelSize(of: image) {
                 preview = "Image \(size.width)×\(size.height)"
             } else {
                 preview = "Image"
@@ -99,6 +100,31 @@ enum ClipReader {
     }
 
     // MARK: - Helpers
+
+    /// Finds image data in any format. Apps differ: PNG, TIFF, JPEG, HEIC, or private
+    /// types like "com.apple.uikit.image" (iPhone/iPad apps running on the Mac).
+    /// If the image isn't PNG or TIFF, a PNG copy is added so every app can paste it.
+    static func imageData(
+        from item: NSPasteboardItem,
+        pasteboard: NSPasteboard,
+        reps: inout [CapturedClip.Representation]
+    ) -> Data? {
+        if let data = item.data(forType: .png) ?? item.data(forType: .tiff) { return data }
+
+        var source: Data?
+        if let type = item.types.first(where: { UTType($0.rawValue)?.conforms(to: .image) == true }) {
+            source = item.data(forType: type)
+        }
+        if source == nil, let image = NSImage(pasteboard: pasteboard) {
+            source = image.tiffRepresentation
+        }
+        guard let source,
+              let png = NSBitmapImageRep(data: source)?.representation(using: .png, properties: [:])
+        else { return nil }
+
+        reps.append(.init(itemIndex: 0, type: NSPasteboard.PasteboardType.png.rawValue, data: png))
+        return png
+    }
 
     /// "https://example.com/page" → true. Multi-line text or plain words → false.
     static func isWebURL(_ string: String) -> Bool {

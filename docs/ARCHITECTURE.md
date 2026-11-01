@@ -41,8 +41,30 @@ The shelf only loads `clip` rows. Raw data is read only when pasting.
 - Clipboard contents are never written to logs.
 - Schema changes are new migrations in `HistoryStore.migrator`; old ones are never edited.
 
-## Coming next (POC)
+## The notch shelf
 
-1. `Notch/NotchPanel.swift`, `Notch/NotchGeometry.swift`: the panel glued to the notch.
-2. `Shelf/ShelfView.swift`, `Shelf/ClipCardView.swift`: cards grouped by day.
-3. `Paste/`: send ⌘V via Accessibility; "Paste together".
+```
+AppDelegate (at launch)
+   ├─ NotchController.start()
+   │     ├─ trigger window: invisible, exactly over the notch (NotchGeometry)
+   │     │     hover 150 ms ─► open(.hover)    click ─► open(.pinned)
+   │     └─ shelf window: NotchShelfView ─► ShelfView (same view as the menu bar panel)
+   │           hover mode: closes 300 ms after the mouse leaves
+   │           pinned mode: closes on Esc / click outside / ⌥⌘V / picking an item
+   └─ GlobalHotKey ⌥⌘V ─► NotchController.toggleFromHotKey()
+```
+
+Both windows are `NotchPanel`s: borderless, non-activating (the app you're in keeps focus,
+so auto-paste lands there), above the menu bar, on every Space.
+
+## Pasting
+
+- Click a row → `AppModel.paste` → `PasteService.paste`: item on the clipboard, then ⌘V is
+  sent to the front app (needs Accessibility; without it the user presses ⌘V).
+- ⌘-click rows → `Selection` (keeps pick order) → "Paste together" → `PasteService.pasteTogether`
+  joins the items' text with newline / space / comma. Images are skipped.
+
+## Screenshots
+
+`ScreenshotWatcher` listens (via Spotlight, `kMDItemIsScreenCapture`) for new screenshot files and
+saves them as image items.
