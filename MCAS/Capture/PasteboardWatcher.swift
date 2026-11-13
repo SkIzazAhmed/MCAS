@@ -16,6 +16,8 @@ final class PasteboardWatcher {
     /// While paused, copies are ignored (and NOT saved later).
     var isPaused = false
     var ignoredBundleIDs: Set<String> = SecretFilter.defaultIgnoredBundleIDs
+    /// Pattern checks for API keys, card numbers and one-time codes (SecretGuard).
+    var secretGuardEnabled = true
 
     private let pasteboard: NSPasteboard
     private let interval: TimeInterval
@@ -82,7 +84,22 @@ final class PasteboardWatcher {
             return nil
         }
 
-        guard let clip = ClipReader.read(from: pasteboard, source: source, now: now) else { return nil }
+        var expiresAt: Date?
+        if secretGuardEnabled, let text = pasteboard.string(forType: .string) {
+            switch SecretGuard.classify(text) {
+            case .allow:
+                break
+            case .skip(let reason):
+                Log.capture.info("Copy not saved (looks like a \(reason, privacy: .public))")
+                return nil
+            case .keepBriefly(let seconds):
+                expiresAt = now.addingTimeInterval(seconds)
+                Log.capture.info("One-time code: will be deleted in \(Int(seconds))s")
+            }
+        }
+
+        guard var clip = ClipReader.read(from: pasteboard, source: source, now: now) else { return nil }
+        clip.expiresAt = expiresAt
         Log.capture.info("Captured \(clip.kind.rawValue, privacy: .public), \(clip.byteSize) bytes, from \(clip.sourceAppName ?? "unknown", privacy: .public)")
         onCapture?(clip)
         return clip

@@ -1,11 +1,14 @@
 // AppModel.swift
 //
-// What: the app's "brain" — owns the watcher, the store and the paste service,
-//       and holds the state the UI shows (recent items, count, paused).
+// What: the app's "brain" — owns the watchers, the store and the paste service,
+//       and holds the state the UI shows (pinned items, recent items, count…).
 // Why:  SwiftUI views read from one place. @Observable makes any view that
 //       reads `recentItems` refresh automatically when it changes.
 //
 // Flow of a copy:  watcher.onCapture → save(_:) → store.save → reload() → UI updates
+//
+// Housekeeping (every 15 s): delete one-time codes whose 60 s are up, and once
+// an hour remove items older than your retention setting (pinned ones are kept).
 
 import AppKit
 import ApplicationServices
@@ -17,6 +20,7 @@ final class AppModel {
     /// The one model used by the running app.
     static let shared = AppModel.makeForLaunch()
 
+    private(set) var pinnedItems: [ClipItem] = []
     private(set) var recentItems: [ClipItem] = []
     private(set) var totalCount = 0
     private(set) var isPaused = false
@@ -24,37 +28,45 @@ final class AppModel {
     private(set) var savesScreenshots = UserDefaults.standard.object(forKey: "savesScreenshots") as? Bool ?? true
     /// True after a paste couldn't press ⌘V because Accessibility is off.
     private(set) var needsAccessibility = false
-    /// Shown in the menu if the database could not be opened.
+    /// Shown in the shelf if the database could not be opened.
     private(set) var startupProblem: String?
 
     @ObservationIgnored let store: HistoryStore
+    @ObservationIgnored let settings: AppSettings
     @ObservationIgnored private let watcher: PasteboardWatcher
     @ObservationIgnored private let pasteService: PasteService
     @ObservationIgnored private let screenshotWatcher = ScreenshotWatcher()
+    @ObservationIgnored private var maintenanceTimer: Timer?
+    @ObservationIgnored private var lastRetentionRun = Date.distantPast
+    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
 
-    init(store: HistoryStore, watcher: PasteboardWatcher, pasteService: PasteService) {
+    init(store: HistoryStore, watcher: PasteboardWatcher, pasteService: PasteService, settings: AppSettings) {
         self.store = store
         self.watcher = watcher
         self.pasteService = pasteService
+        self.settings = settings
         watcher.onCapture = { [weak self] clip in
             self?.save(clip)
         }
         screenshotWatcher.onCapture = { [weak self] clip in
             self?.save(clip)
         }
+        applySettings()
         reload()
     }
 
     private static func makeForLaunch() -> AppModel {
         if AppEnvironment.isRunningTests {
             // Tests build their own objects. Give the host app a harmless setup
-            // that never touches your real clipboard or history.
+            // that never touches your real clipboard, history or settings.
             let store = try! HistoryStore.inMemory()
             let pasteboard = NSPasteboard(name: NSPasteboard.Name("com.izaz.mcas.test-host"))
+            let defaults = UserDefaults(suiteName: "com.izaz.mcas.test-host") ?? .standard
             return AppModel(
                 store: store,
                 watcher: PasteboardWatcher(pasteboard: pasteboard),
-                pasteService: PasteService(store: store, pasteboard: pasteboard)
+                pasteService: PasteService(store: store, pasteboard: pasteboard),
+                settings: AppSettings(defaults: defaults)
             )
         }
 
@@ -67,15 +79,59 @@ final class AppModel {
             problem = "History could not be opened, so nothing will be kept after quitting."
             store = try! HistoryStore.inMemory()
         }
-        let model = AppModel(store: store, watcher: PasteboardWatcher(), pasteService: PasteService(store: store))
+        let model = AppModel(
+            store: store,
+            watcher: PasteboardWatcher(),
+            pasteService: PasteService(store: store),
+            settings: .shared
+        )
         model.startupProblem = problem
         model.watcher.start()
         if model.savesScreenshots { model.screenshotWatcher.start() }
+        model.startMaintenance()
+        model.settingsObserver = NotificationCenter.default.addObserver(
+            forName: .mcasSettingsChanged, object: nil, queue: .main
+        ) { [weak model] _ in
+            MainActor.assumeIsolated {
+                model?.applySettings()
+                model?.runMaintenance(forceRetention: true)
+            }
+        }
         Log.app.info("MCAS started with \(model.totalCount) saved items")
         return model
     }
 
-    // MARK: - Actions
+    // MARK: - Settings and housekeeping
+
+    private func applySettings() {
+        watcher.ignoredBundleIDs = settings.allIgnoredBundleIDs
+        watcher.secretGuardEnabled = settings.secretGuardEnabled
+    }
+
+    private func startMaintenance() {
+        runMaintenance(forceRetention: true)
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.runMaintenance(forceRetention: false) }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        maintenanceTimer = timer
+    }
+
+    func runMaintenance(forceRetention: Bool) {
+        do {
+            var removed = try store.deleteExpired()
+            if forceRetention || Date.now.timeIntervalSince(lastRetentionRun) > 3600 {
+                removed += try store.applyRetention(days: settings.retentionDays)
+                lastRetentionRun = .now
+            }
+            if removed > 0 { reload() }
+        } catch {
+            Log.storage.error("Housekeeping failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    // MARK: - History
 
     func save(_ clip: CapturedClip) {
         do {
@@ -88,10 +144,51 @@ final class AppModel {
 
     func reload() {
         do {
+            pinnedItems = try store.pinned()
             recentItems = try store.recent(limit: 500)
             totalCount = try store.count()
         } catch {
             Log.storage.error("Loading failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Search across all history (F9). Empty query → no results.
+    func search(_ query: String) -> [ClipItem] {
+        do {
+            return try store.search(query)
+        } catch {
+            Log.storage.error("Search failed: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    func togglePin(_ item: ClipItem) {
+        guard let id = item.id else { return }
+        do {
+            try store.setPinned(id: id, !item.isPinned)
+            reload()
+        } catch {
+            Log.storage.error("Pin failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func delete(_ item: ClipItem) {
+        guard let id = item.id else { return }
+        do {
+            try store.delete(id: id)
+            reload()
+        } catch {
+            Log.storage.error("Delete failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Clears history but keeps pinned items.
+    func clearHistory() {
+        do {
+            try store.deleteAll(includingPinned: false)
+            reload()
+        } catch {
+            Log.storage.error("Clearing failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -107,6 +204,8 @@ final class AppModel {
         UserDefaults.standard.set(enabled, forKey: "savesScreenshots")
         if enabled { screenshotWatcher.start() } else { screenshotWatcher.stop() }
     }
+
+    // MARK: - Pasting
 
     func copyToClipboard(_ item: ClipItem) {
         do {
@@ -124,6 +223,16 @@ final class AppModel {
             reload()
         } catch {
             Log.paste.error("Paste failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Pastes only the words, without fonts, colors or links (F11).
+    func pastePlainText(_ item: ClipItem) {
+        do {
+            handle(try pasteService.pastePlainText(item))
+            reload()
+        } catch {
+            Log.paste.error("Plain paste failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -162,13 +271,10 @@ final class AppModel {
         }
     }
 
-    func clearHistory() {
-        do {
-            try store.deleteAll()
-            reload()
-        } catch {
-            Log.storage.error("Clearing failed: \(error.localizedDescription, privacy: .public)")
-        }
+    // MARK: - Windows
+
+    func openSettings() {
+        SettingsWindowController.shared.show(settings: settings, model: self)
     }
 
     // MARK: - Debug helpers (used by the Debug menu)

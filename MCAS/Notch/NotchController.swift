@@ -9,9 +9,11 @@
 //   • hover mode: the mouse leaves the shelf for 300 ms
 //   • any mode: Esc, clicking outside, picking an item, or ⌥⌘V again
 //
-// The shelf never takes keyboard focus, so the app you were typing in keeps its
+// The shelf doesn't take keyboard focus, so the app you were typing in keeps its
 // cursor and auto-paste (⌘V) lands there. Esc and outside clicks are noticed
 // with event monitors instead.
+// Exception: clicking the search box. Then MCAS becomes the active app so you
+// can type, and on close it hands focus back to the app you came from.
 //
 // Why the delays: passing the cursor across the top of the screen shouldn't pop
 // the shelf open, and a small wobble outside shouldn't snap it shut.
@@ -41,6 +43,10 @@ final class NotchController {
     private var outsideSince: Date?
     private var screenObserver: NSObjectProtocol?
     private var eventMonitors: [Any] = []
+    /// The app you were in when the shelf opened: focus goes back here.
+    private var previousApp: NSRunningApplication?
+    /// True while MCAS is active because you clicked the search box.
+    private var activatedForTyping = false
 
     var isOpen: Bool { openMode != nil }
 
@@ -56,7 +62,9 @@ final class NotchController {
         hoverView.onHoverChange = { [weak self] inside in self?.hoverChanged(inside) }
         hoverView.onClick = { [weak self] in self?.open(.pinned) }
         shelf.onEscape = { [weak self] in self?.close() }
-        shelf.onResignKey = { [weak self] in self?.close() }
+        // Clicked another app while typing: close, but don't pull focus back.
+        shelf.onResignKey = { [weak self] in self?.close(restoreFocus: false) }
+        shelf.onBecomeKey = { [weak self] in self?.startTyping() }
     }
 
     func start() {
@@ -114,6 +122,8 @@ final class NotchController {
         }
 
         openMode = mode
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
         model.reload()
         model.refreshAccessibilityStatus()
 
@@ -128,13 +138,18 @@ final class NotchController {
         Log.notch.debug("Shelf opened (\(mode == .hover ? "hover" : "pinned", privacy: .public))")
     }
 
-    func close() {
+    func close(restoreFocus: Bool = true) {
         pendingOpen?.cancel()
         pendingOpen = nil
         guard isOpen else { return }
         openMode = nil
         stopLeaveTimer()
         stopEventMonitors()
+        if restoreFocus {
+            restoreFocusIfNeeded()
+        } else {
+            activatedForTyping = false
+        }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.12
             shelf.animator().alphaValue = 0
@@ -144,6 +159,33 @@ final class NotchController {
                 self.shelf.orderOut(nil)
             }
         })
+    }
+
+    // MARK: - Typing in the search box
+
+    private func startTyping() {
+        guard isOpen else { return }
+        // Typing: keep the shelf open even if the mouse wanders off.
+        if openMode == .hover {
+            openMode = .pinned
+            stopLeaveTimer()
+        }
+        if !activatedForTyping {
+            activatedForTyping = true
+            NSApp.activate()
+        }
+    }
+
+    /// Gives the keyboard back to the app you were using, so ⌘V pastes there.
+    private func restoreFocusIfNeeded() {
+        guard activatedForTyping else { return }
+        activatedForTyping = false
+        if let previousApp {
+            NSApp.yieldActivation(to: previousApp)
+            _ = previousApp.activate(options: [])
+        } else {
+            NSApp.deactivate()
+        }
     }
 
     // MARK: - Esc and clicks outside
@@ -184,7 +226,8 @@ final class NotchController {
     private func closeIfClickOutside() {
         let point = NSEvent.mouseLocation
         let inside = shelf.frame.contains(point) || geometry.notchRect.contains(point)
-        if !inside { close() }
+        // The click itself moves focus to wherever you clicked; don't override it.
+        if !inside { close(restoreFocus: false) }
     }
 
     // MARK: - Hover

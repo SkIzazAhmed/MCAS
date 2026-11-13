@@ -7,7 +7,7 @@
 // to the clipboard (a community convention, see nspasteboard.org). We also skip
 // anything copied while a password manager is the front app.
 //
-// v1.0 will add pattern checks (API keys, card numbers, OTP codes) here.
+// Pattern checks (API keys, card numbers, one-time codes) live in SecretGuard.swift.
 
 import AppKit
 

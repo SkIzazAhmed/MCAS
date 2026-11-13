@@ -16,6 +16,7 @@ import AppKit
 final class NotchPanel: NSPanel {
     var onEscape: (() -> Void)?
     var onResignKey: (() -> Void)?
+    var onBecomeKey: (() -> Void)?
 
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -45,6 +46,12 @@ final class NotchPanel: NSPanel {
     /// Esc
     override func cancelOperation(_ sender: Any?) {
         onEscape?()
+    }
+
+    /// You clicked into a text field (the search box).
+    override func becomeKey() {
+        super.becomeKey()
+        onBecomeKey?()
     }
 
     /// Clicked somewhere else.

@@ -1,6 +1,6 @@
 # MCAS architecture
 
-Updated with each feature. Last update: POC step 1 (capture + storage).
+Updated with each feature. Last update: v0.2 (pin, search, retention, secret guard, settings).
 
 ## How a copy travels
 
@@ -68,3 +68,17 @@ so auto-paste lands there), above the menu bar, on every Space.
 
 `ScreenshotWatcher` listens (via Spotlight, `kMDItemIsScreenCapture`) for new screenshot files and
 saves them as image items.
+
+## v0.2 additions
+
+- **Pin / search / retention** live in `HistoryStore` (migration "v2" added `isPinned` and `expiresAt`).
+  `AppModel.runMaintenance` runs every 15 s: deletes expired one-time codes, and hourly removes
+  unpinned items older than the retention setting.
+- **Secret guard** (`Capture/SecretGuard.swift`) checks copied text in `PasteboardWatcher`:
+  API keys and Luhn-valid card numbers are skipped; 6–8 digit codes get `expiresAt = now + 60 s`.
+- **Settings** (`Settings/AppSettings.swift`, `Settings/SettingsView.swift`): saved in UserDefaults.
+  Changes post `.mcasSettingsChanged`; `AppModel` re-applies the ignore list / secret guard and
+  `AppDelegate` re-registers the shortcut.
+- **Search focus**: clicking the search box makes the shelf key and activates MCAS so you can type;
+  closing hands activation back to the app you came from (`NotchController.restoreFocusIfNeeded`),
+  and `PasteService` waits until that app is in front before sending ⌘V.

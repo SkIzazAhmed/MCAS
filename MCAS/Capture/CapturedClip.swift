@@ -52,6 +52,8 @@ struct CapturedClip: Equatable, Sendable {
     var createdAt: Date
     /// Fingerprint used to spot duplicates (F7).
     var contentHash: String
+    /// Set by the secret guard for one-time codes: delete the item at this time.
+    var expiresAt: Date? = nil
 
     var byteSize: Int {
         representations.reduce(0) { $0 + $1.data.count }

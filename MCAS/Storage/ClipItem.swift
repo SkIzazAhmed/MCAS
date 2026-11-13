@@ -25,6 +25,10 @@ struct ClipItem: Identifiable, Equatable, Sendable, Codable, FetchableRecord, Mu
     var contentHash: String
     var byteSize: Int
     var thumbnail: Data?
+    /// Pinned items stay at the top and are never removed by retention (F8).
+    var isPinned: Bool = false
+    /// Set for one-time codes: the item deletes itself at this time (secret guard).
+    var expiresAt: Date? = nil
 
     mutating func didInsert(_ inserted: InsertionSuccess) {
         id = inserted.rowID
@@ -34,6 +38,8 @@ struct ClipItem: Identifiable, Equatable, Sendable, Codable, FetchableRecord, Mu
         static let id = Column(CodingKeys.id)
         static let createdAt = Column(CodingKeys.createdAt)
         static let contentHash = Column(CodingKeys.contentHash)
+        static let isPinned = Column(CodingKeys.isPinned)
+        static let expiresAt = Column(CodingKeys.expiresAt)
     }
 }
 

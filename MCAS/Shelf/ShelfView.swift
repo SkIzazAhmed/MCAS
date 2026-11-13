@@ -1,14 +1,23 @@
 // ShelfView.swift
 //
-// What: the history panel: header, day groups (Today / Yesterday / …), one row
-//       per copy, a selection bar for "Paste together", and a footer.
+// What: the history panel: search box, Pinned items, day groups (Today /
+//       Yesterday / …), a selection bar for "Paste together", and a footer.
 // Where: shown in the notch (NotchShelfView) and from the menu bar icon.
 //
 //   Click a row          → pastes it into the app you were using
+//   Shift-click          → pastes as plain text (no fonts, colors or links)
 //   ⌘-click rows         → selects several (numbered in the order you pick)
-//   "Paste together"     → pastes all selected, joined one per line (or spaces/commas)
+//   Right-click          → Pin, Paste as Plain Text, Copy Without Pasting, Delete
+//   Type in Search       → filters all history; Return pastes the first match
 
 import SwiftUI
+
+/// One titled group of rows in the shelf.
+struct ShelfSection: Identifiable {
+    let id: String
+    let title: String
+    let items: [ClipItem]
+}
 
 struct ShelfView: View {
     let model: AppModel
@@ -17,11 +26,40 @@ struct ShelfView: View {
     let close: () -> Void
 
     @State private var selection = Selection()
+    @State private var query = ""
+    @State private var results: [ClipItem] = []
     @AppStorage("pasteSeparator") private var separator: PasteSeparator = .newline
+
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The sections currently on screen.
+    private var sections: [ShelfSection] {
+        if isSearching {
+            guard !results.isEmpty else { return [] }
+            let title = results.count == 1 ? "1 match" : "\(results.count) matches"
+            return [ShelfSection(id: "results", title: title, items: results)]
+        }
+        var list: [ShelfSection] = []
+        if !model.pinnedItems.isEmpty {
+            list.append(ShelfSection(id: "pinned", title: "Pinned", items: model.pinnedItems))
+        }
+        list += DayGrouping.group(model.recentItems).map {
+            ShelfSection(id: $0.id.description, title: $0.title, items: $0.items)
+        }
+        return list
+    }
+
+    /// Every item shown, in order (used to look up selected items).
+    private var allListed: [ClipItem] {
+        sections.flatMap(\.items)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            searchField
             Divider()
             if let problem = model.startupProblem {
                 banner(problem, systemImage: "exclamationmark.triangle")
@@ -29,7 +67,7 @@ struct ShelfView: View {
             if model.needsAccessibility {
                 accessibilityBanner
             }
-            if model.recentItems.isEmpty {
+            if sections.isEmpty {
                 emptyState
             } else {
                 history
@@ -37,6 +75,9 @@ struct ShelfView: View {
             Divider()
             if selection.isEmpty { footer } else { selectionBar }
         }
+        .onChange(of: query) { refreshResults() }
+        .onChange(of: model.recentItems) { refreshResults() }
+        .onChange(of: model.pinnedItems) { refreshResults() }
     }
 
     // MARK: - Parts
@@ -50,14 +91,40 @@ struct ShelfView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
     private var countText: String {
-        let shown = model.recentItems.count
         let total = model.totalCount
-        if total > shown { return "Latest \(shown) of \(total)" }
         return total == 1 ? "1 item" : "\(total) items"
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search history", text: $query)
+                .textFieldStyle(.plain)
+                .onSubmit {
+                    if let first = results.first { pick(first, plainText: false) }
+                }
+            if isSearching {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
     }
 
     private func banner(_ text: String, systemImage: String) -> some View {
@@ -82,8 +149,8 @@ struct ShelfView: View {
 
     private var emptyState: some View {
         VStack(spacing: 6) {
-            Image(systemName: "list.clipboard").font(.title)
-            Text("Copy something to get started")
+            Image(systemName: isSearching ? "magnifyingglass" : "list.clipboard").font(.title)
+            Text(isSearching ? "No matches for \"\(query)\"" : "Copy something to get started")
         }
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity)
@@ -94,12 +161,10 @@ struct ShelfView: View {
         ScrollView {
             // Lazy: only rows on screen are drawn, so hundreds of items stay fast.
             LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                ForEach(DayGrouping.group(model.recentItems)) { section in
+                ForEach(sections) { section in
                     Section {
                         ForEach(section.items) { item in
-                            ClipRowView(item: item, selectionNumber: item.id.flatMap(selection.position(of:))) {
-                                clicked(item)
-                            }
+                            row(for: item)
                         }
                     } header: {
                         Text(section.title)
@@ -117,15 +182,35 @@ struct ShelfView: View {
         .frame(height: listHeight)
     }
 
+    private func row(for item: ClipItem) -> some View {
+        ClipRowView(item: item, selectionNumber: item.id.flatMap(selection.position(of:))) {
+            clicked(item)
+        }
+        .contextMenu {
+            Button(item.isPinned ? "Unpin" : "Pin") { model.togglePin(item) }
+            Button("Paste as Plain Text") { pick(item, plainText: true) }
+            Button("Copy Without Pasting") {
+                model.copyToClipboard(item)
+                close()
+            }
+            Divider()
+            Button("Delete", role: .destructive) { model.delete(item) }
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: 12) {
             Toggle("Pause", isOn: Binding(get: { model.isPaused }, set: { model.setPaused($0) }))
             Toggle("Screenshots", isOn: Binding(get: { model.savesScreenshots }, set: { model.setSavesScreenshots($0) }))
             Spacer()
-            Text("⌘-click to select several")
+            Text("⌘-click: select · ⇧-click: plain text")
                 .foregroundStyle(.secondary)
             Menu {
-                Button("Clear history") { model.clearHistory() }
+                Button("Settings…") {
+                    close()
+                    model.openSettings()
+                }
+                Button("Clear History (keeps pinned)") { model.clearHistory() }
                 #if DEBUG
                 Divider()
                 Button("Simulate a copy") { model.debugSimulateCopy() }
@@ -167,19 +252,33 @@ struct ShelfView: View {
 
     // MARK: - Actions
 
+    private func refreshResults() {
+        results = isSearching ? model.search(query) : []
+    }
+
     private func clicked(_ item: ClipItem) {
         guard let id = item.id else { return }
+        let flags = NSEvent.modifierFlags
         // ⌘-click, or any click while a selection exists, adds/removes from the selection.
-        if NSEvent.modifierFlags.contains(.command) || !selection.isEmpty {
+        if flags.contains(.command) || !selection.isEmpty {
             selection.toggle(id)
             return
         }
+        pick(item, plainText: flags.contains(.shift))
+    }
+
+    private func pick(_ item: ClipItem, plainText: Bool) {
         close()
-        model.paste(item)
+        if plainText {
+            model.pastePlainText(item)
+        } else {
+            model.paste(item)
+        }
+        query = ""
     }
 
     private func pasteSelection() {
-        let items = selection.items(from: model.recentItems)
+        let items = selection.items(from: allListed)
         selection.clear()
         close()
         model.pasteTogether(items, separator: separator)
@@ -203,9 +302,18 @@ struct ClipRowView: View {
                     Text(item.displayTitle)
                         .lineLimit(2)
                         .truncationMode(.tail)
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        if item.isPinned {
+                            Image(systemName: "pin.fill")
+                        }
+                        if item.expiresAt != nil {
+                            Image(systemName: "timer")
+                                .help("One-time code: deleted automatically after 60 seconds")
+                        }
+                        Text(subtitle)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
                 if let selectionNumber {

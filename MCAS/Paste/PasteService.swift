@@ -67,6 +67,15 @@ final class PasteService {
         return pasteIntoFrontApp()
     }
 
+    /// Pastes only the text, without fonts, colors or links (F11).
+    @discardableResult
+    func pastePlainText(_ item: ClipItem) throws -> Result {
+        guard let text = try text(of: item) else { return .nothingToPaste }
+        Self.writeText(text, to: pasteboard)
+        if let id = item.id { try store.bump(id: id) }
+        return pasteIntoFrontApp()
+    }
+
     // MARK: - Several items
 
     /// Joins the text of several items (in the order given) and pastes it once.
@@ -125,19 +134,28 @@ final class PasteService {
             Log.paste.notice("Accessibility is off: item is on the clipboard, user presses ⌘V")
             return .copiedNeedsAccessibility
         }
-        let send = sendPasteKeystroke
-        // Wait a moment so the shelf has closed and the front app has focus again.
+        Self.sendWhenFocusReturns(sendPasteKeystroke, attemptsLeft: 5)
+        return .pasted
+    }
+
+    /// Waits until the shelf has closed and your app is in front again, then
+    /// presses ⌘V. If you were typing in the search field, MCAS was briefly the
+    /// active app, so this checks a few times (every 0.1 s) before giving up.
+    nonisolated private static func sendWhenFocusReturns(_ send: @escaping () -> Void, attemptsLeft: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             let ourPID = ProcessInfo.processInfo.processIdentifier
             let front = NSWorkspace.shared.frontmostApplication
-            guard front?.processIdentifier != ourPID else {
-                Log.paste.notice("MCAS itself is in front; not sending ⌘V")
+            if front?.processIdentifier == ourPID {
+                if attemptsLeft > 1 {
+                    sendWhenFocusReturns(send, attemptsLeft: attemptsLeft - 1)
+                } else {
+                    Log.paste.notice("MCAS itself stayed in front; not sending ⌘V")
+                }
                 return
             }
             send()
             Log.paste.info("Sent ⌘V to \(front?.localizedName ?? "unknown app", privacy: .public)")
         }
-        return .pasted
     }
 
     /// Presses ⌘V as if on the keyboard.
