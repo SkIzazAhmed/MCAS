@@ -1,7 +1,12 @@
-# This workflow will build a Swift project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
+# Builds MCAS and runs all its tests on GitHub's Mac machines, on every push
+# and pull request to master. A green ✅ next to a commit means it compiled and
+# every test passed.
+#
+# MCAS is an Xcode app project (not a Swift package), so it uses `xcodebuild`
+# rather than `swift build`. CI has no Apple ID, so it builds unsigned
+# ("Sign to Run Locally"), which is fine for building and testing.
 
-name: Swift
+name: Build and test
 
 on:
   push:
@@ -10,13 +15,31 @@ on:
     branches: [ "master" ]
 
 jobs:
-  build:
-
+  test:
     runs-on: macos-latest
+    timeout-minutes: 30
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: swift build -v
-    - name: Run tests
-      run: swift test -v
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build and run tests
+        shell: bash # fails the step if xcodebuild fails, even though its output is piped
+        run: |
+          xcodebuild test \
+            -project MCAS.xcodeproj \
+            -scheme MCAS \
+            -destination 'platform=macOS' \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            | tee xcodebuild.log
+
+      - name: Keep the build log if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
