@@ -1,14 +1,21 @@
 // ShelfView.swift
 //
 // What: the history panel: search box, Pinned items, day groups (Today /
-//       Yesterday / …), a selection bar for "Paste together", and a footer.
+//       Yesterday / …), a selection bar for "Paste together" / "Paste as queue",
+//       and a footer.
 // Where: shown in the notch (NotchShelfView) and from the menu bar icon.
 //
+// Mouse:
 //   Click a row          → pastes it into the app you were using
 //   Shift-click          → pastes as plain text (no fonts, colors or links)
 //   ⌘-click rows         → selects several (numbered in the order you pick)
-//   Right-click          → Pin, Paste as Plain Text, Copy Without Pasting, Delete
-//   Type in Search       → filters all history; Return pastes the first match
+//   Right-click          → Pin, Paste as Plain Text, Copy, Delete + smart actions
+// Keyboard (after ⌥⌘V, the cursor is already in the search box):
+//   type                 → filters all history
+//   ↑ / ↓                → moves the highlight
+//   Return / ⇧Return     → pastes the highlighted item / as plain text
+//   ⌘1 … ⌘9              → pastes the 1st … 9th item
+//   Esc                  → closes
 
 import SwiftUI
 
@@ -28,6 +35,9 @@ struct ShelfView: View {
     @State private var selection = Selection()
     @State private var query = ""
     @State private var results: [ClipItem] = []
+    /// Index (into `allListed`) of the row the arrow keys point at.
+    @State private var highlighted: Int?
+    @FocusState private var searchFocused: Bool
     @AppStorage("pasteSeparator") private var separator: PasteSeparator = .newline
 
     private var isSearching: Bool {
@@ -51,9 +61,14 @@ struct ShelfView: View {
         return list
     }
 
-    /// Every item shown, in order (used to look up selected items).
+    /// Every item shown, top to bottom (arrow keys, ⌘1–9 and selections use this).
     private var allListed: [ClipItem] {
         sections.flatMap(\.items)
+    }
+
+    private var highlightedItem: ClipItem? {
+        guard let highlighted, allListed.indices.contains(highlighted) else { return nil }
+        return allListed[highlighted]
     }
 
     var body: some View {
@@ -67,6 +82,9 @@ struct ShelfView: View {
             if model.needsAccessibility {
                 accessibilityBanner
             }
+            if let queue = model.queue {
+                queueBanner(queue)
+            }
             if sections.isEmpty {
                 emptyState
             } else {
@@ -75,9 +93,16 @@ struct ShelfView: View {
             Divider()
             if selection.isEmpty { footer } else { selectionBar }
         }
-        .onChange(of: query) { refreshResults() }
+        .onChange(of: query) {
+            refreshResults()
+            highlighted = isSearching ? 0 : nil
+        }
         .onChange(of: model.recentItems) { refreshResults() }
         .onChange(of: model.pinnedItems) { refreshResults() }
+        .onChange(of: model.searchFocusRequest) {
+            searchFocused = true
+            highlighted = allListed.isEmpty ? nil : 0
+        }
     }
 
     // MARK: - Parts
@@ -106,8 +131,32 @@ struct ShelfView: View {
                 .foregroundStyle(.secondary)
             TextField("Search history", text: $query)
                 .textFieldStyle(.plain)
+                .focused($searchFocused)
                 .onSubmit {
-                    if let first = results.first { pick(first, plainText: false) }
+                    if let item = highlightedItem ?? allListed.first { pick(item, plainText: false) }
+                }
+                .onKeyPress(.downArrow) {
+                    moveHighlight(by: 1)
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    moveHighlight(by: -1)
+                    return .handled
+                }
+                .onKeyPress(keys: [.return]) { press in
+                    // ⇧Return = plain text. Plain Return falls through to onSubmit.
+                    guard press.modifiers.contains(.shift), let item = highlightedItem ?? allListed.first else { return .ignored }
+                    pick(item, plainText: true)
+                    return .handled
+                }
+                .onKeyPress(characters: .decimalDigits) { press in
+                    // ⌘1 … ⌘9 paste the first nine items. Digits alone are typed as usual.
+                    guard press.modifiers.contains(.command),
+                          let digit = Int(press.characters), (1...9).contains(digit),
+                          allListed.indices.contains(digit - 1)
+                    else { return .ignored }
+                    pick(allListed[digit - 1], plainText: false)
+                    return .handled
                 }
             if isSearching {
                 Button {
@@ -147,6 +196,22 @@ struct ShelfView: View {
         .background(Color.orange.opacity(0.15))
     }
 
+    private func queueBanner(_ queue: PasteQueue) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "list.number")
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Paste queue · \(queue.progressLabel)").fontWeight(.semibold)
+                Text("Press ⌘V in any app to paste the next item.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button("Stop") { model.stopQueue() }
+        }
+        .font(.caption)
+        .padding(10)
+        .background(Color.accentColor.opacity(0.15))
+    }
+
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: isSearching ? "magnifyingglass" : "list.clipboard").font(.title)
@@ -158,32 +223,46 @@ struct ShelfView: View {
     }
 
     private var history: some View {
-        ScrollView {
-            // Lazy: only rows on screen are drawn, so hundreds of items stay fast.
-            LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
-                ForEach(sections) { section in
-                    Section {
-                        ForEach(section.items) { item in
-                            row(for: item)
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Lazy: only rows on screen are drawn, so hundreds of items stay fast.
+                LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                    ForEach(sections) { section in
+                        Section {
+                            ForEach(section.items) { item in
+                                row(for: item)
+                                    .id(item.id ?? -1)
+                            }
+                        } header: {
+                            Text(section.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(.regularMaterial)
                         }
-                    } header: {
-                        Text(section.title)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.regularMaterial)
                     }
                 }
+                .padding(6)
             }
-            .padding(6)
+            .onChange(of: highlighted) {
+                if let id = highlightedItem?.id {
+                    withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
         }
         .frame(height: listHeight)
     }
 
     private func row(for item: ClipItem) -> some View {
-        ClipRowView(item: item, selectionNumber: item.id.flatMap(selection.position(of:))) {
+        let smart = item.smartType
+        return ClipRowView(
+            item: item,
+            smartType: smart,
+            selectionNumber: item.id.flatMap(selection.position(of:)),
+            isHighlighted: item.id != nil && item.id == highlightedItem?.id
+        ) {
             clicked(item)
         }
         .contextMenu {
@@ -193,8 +272,38 @@ struct ShelfView: View {
                 model.copyToClipboard(item)
                 close()
             }
+            smartActions(for: smart)
             Divider()
             Button("Delete", role: .destructive) { model.delete(item) }
+        }
+    }
+
+    /// Extra right-click actions for links, colors and emails.
+    @ViewBuilder
+    private func smartActions(for smart: SmartType) -> some View {
+        switch smart {
+        case .link(let url):
+            Divider()
+            Button("Open Link") {
+                close()
+                model.open(url)
+            }
+        case .color:
+            Divider()
+            if let hex = smart.hexString {
+                Button("Copy as HEX (\(hex))") { model.copyText(hex); close() }
+            }
+            if let rgb = smart.rgbString {
+                Button("Copy as RGB (\(rgb))") { model.copyText(rgb); close() }
+            }
+        case .email(let address):
+            Divider()
+            Button("New Email") {
+                close()
+                model.newEmail(to: address)
+            }
+        case .code, .none:
+            EmptyView()
         }
     }
 
@@ -203,7 +312,7 @@ struct ShelfView: View {
             Toggle("Pause", isOn: Binding(get: { model.isPaused }, set: { model.setPaused($0) }))
             Toggle("Screenshots", isOn: Binding(get: { model.savesScreenshots }, set: { model.setSavesScreenshots($0) }))
             Spacer()
-            Text("⌘-click: select · ⇧-click: plain text")
+            Text("↑↓ ↩ · ⌘1–9 · ⌘-click to select")
                 .foregroundStyle(.secondary)
             Menu {
                 Button("Settings…") {
@@ -232,7 +341,7 @@ struct ShelfView: View {
     }
 
     private var selectionBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text("\(selection.count) selected")
                 .font(.caption.weight(.semibold))
             Picker("Join", selection: $separator) {
@@ -242,6 +351,8 @@ struct ShelfView: View {
             .fixedSize()
             Spacer()
             Button("Cancel") { selection.clear() }
+            Button("Paste as queue") { queueSelection() }
+                .help("Each ⌘V you press pastes the next item, in the order you picked them")
             Button("Paste together") { pasteSelection() }
                 .keyboardShortcut(.defaultAction)
         }
@@ -254,6 +365,13 @@ struct ShelfView: View {
 
     private func refreshResults() {
         results = isSearching ? model.search(query) : []
+    }
+
+    private func moveHighlight(by step: Int) {
+        let count = allListed.count
+        guard count > 0 else { return }
+        let next = (highlighted ?? -1) + step
+        highlighted = min(max(next, 0), count - 1)
     }
 
     private func clicked(_ item: ClipItem) {
@@ -275,6 +393,7 @@ struct ShelfView: View {
             model.paste(item)
         }
         query = ""
+        highlighted = nil
     }
 
     private func pasteSelection() {
@@ -283,13 +402,24 @@ struct ShelfView: View {
         close()
         model.pasteTogether(items, separator: separator)
     }
+
+    private func queueSelection() {
+        let items = selection.items(from: allListed)
+        selection.clear()
+        close()
+        model.startQueue(items)
+    }
 }
 
-/// One history row: icon or thumbnail, the text, and where/when it was copied.
+/// One history row: icon, thumbnail or color swatch, the text, and where/when
+/// it was copied.
 struct ClipRowView: View {
     let item: ClipItem
-    /// 1, 2, 3… when selected for "Paste together".
+    var smartType: SmartType = .none
+    /// 1, 2, 3… when selected for "Paste together" / "Paste as queue".
     var selectionNumber: Int?
+    /// Chosen with the arrow keys.
+    var isHighlighted = false
     let action: () -> Void
     @State private var isHovered = false
 
@@ -300,6 +430,7 @@ struct ClipRowView: View {
                     .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.displayTitle)
+                        .font(smartType == .code ? .system(.body, design: .monospaced) : .body)
                         .lineLimit(2)
                         .truncationMode(.tail)
                     HStack(spacing: 4) {
@@ -330,6 +461,10 @@ struct ClipRowView: View {
                 RoundedRectangle(cornerRadius: 6)
                     .fill(backgroundColor)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.accentColor, lineWidth: isHighlighted ? 1.5 : 0)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -339,26 +474,44 @@ struct ClipRowView: View {
 
     private var backgroundColor: Color {
         if selectionNumber != nil { return Color.accentColor.opacity(0.28) }
+        if isHighlighted { return Color.accentColor.opacity(0.22) }
         return isHovered ? Color.accentColor.opacity(0.18) : Color.clear
     }
 
     @ViewBuilder
     private var icon: some View {
-        if let data = item.thumbnail, let image = NSImage(data: data) {
+        if case let .color(r, g, b) = smartType {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2)))
+                .padding(3)
+        } else if let data = item.thumbnail, let image = NSImage(data: data) {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
         } else {
-            Image(systemName: item.symbolName)
+            Image(systemName: symbolName)
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
         }
     }
 
+    private var symbolName: String {
+        switch smartType {
+        case .email: return "envelope"
+        case .code: return "chevron.left.forwardslash.chevron.right"
+        default: return item.symbolName
+        }
+    }
+
     private var subtitle: String {
-        let time = item.createdAt.formatted(date: .omitted, time: .shortened)
-        if let app = item.sourceAppName { return "\(app) · \(time)" }
-        return time
+        var parts: [String] = []
+        if case .link(let url) = smartType, let host = url.host() {
+            parts.append(host.replacingOccurrences(of: "www.", with: ""))
+        }
+        if let app = item.sourceAppName { parts.append(app) }
+        parts.append(item.createdAt.formatted(date: .omitted, time: .shortened))
+        return parts.joined(separator: " · ")
     }
 }

@@ -47,8 +47,9 @@ final class PasteService {
 
     // MARK: - One item
 
-    /// Puts `item` on the clipboard and moves it to the top of history.
-    func copyToClipboard(_ item: ClipItem) throws {
+    /// Puts `item` on the clipboard and (unless `bump` is false) moves it to the
+    /// top of history. The paste queue uses bump: false so your order stays put.
+    func copyToClipboard(_ item: ClipItem, bump: Bool = true) throws {
         guard let id = item.id else { return }
         let reps = try store.representations(for: id)
         guard !reps.isEmpty else {
@@ -56,7 +57,7 @@ final class PasteService {
             return
         }
         Self.write(reps, to: pasteboard)
-        try store.bump(id: id)
+        if bump { try store.bump(id: id) }
         Log.paste.info("Copied item \(id) (\(item.kind.rawValue, privacy: .public)) to the clipboard")
     }
 
@@ -117,6 +118,11 @@ final class PasteService {
         items.first?.setData(Data(), forType: .mcasInternal)
         pasteboard.clearContents()
         pasteboard.writeObjects(items)
+    }
+
+    /// Puts a piece of text on the clipboard (e.g. a color converted to HEX).
+    func copyText(_ text: String) {
+        Self.writeText(text, to: pasteboard)
     }
 
     static func writeText(_ text: String, to pasteboard: NSPasteboard) {

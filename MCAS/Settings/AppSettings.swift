@@ -68,6 +68,8 @@ final class AppSettings {
     private(set) var secretGuardEnabled: Bool
     /// Your own additions to the ignore list (bundle IDs, e.g. "com.example.app").
     private(set) var customIgnoredApps: [String]
+    /// Show a small "Saved" flash beside the notch after each copy.
+    private(set) var showsSaveFlash: Bool
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -76,6 +78,7 @@ final class AppSettings {
         static let retentionDays = "retentionDays"
         static let secretGuard = "secretGuardEnabled"
         static let ignoredApps = "customIgnoredApps"
+        static let saveFlash = "showsSaveFlash"
     }
 
     /// Tests pass their own UserDefaults so they never touch your real settings.
@@ -85,6 +88,7 @@ final class AppSettings {
         retentionDays = defaults.object(forKey: Key.retentionDays) as? Int ?? 30
         secretGuardEnabled = defaults.object(forKey: Key.secretGuard) as? Bool ?? true
         customIgnoredApps = defaults.stringArray(forKey: Key.ignoredApps) ?? []
+        showsSaveFlash = defaults.object(forKey: Key.saveFlash) as? Bool ?? true
     }
 
     /// Built-in password managers plus your additions.
@@ -107,6 +111,12 @@ final class AppSettings {
     func setSecretGuardEnabled(_ enabled: Bool) {
         secretGuardEnabled = enabled
         defaults.set(enabled, forKey: Key.secretGuard)
+        changed()
+    }
+
+    func setShowsSaveFlash(_ enabled: Bool) {
+        showsSaveFlash = enabled
+        defaults.set(enabled, forKey: Key.saveFlash)
         changed()
     }
 

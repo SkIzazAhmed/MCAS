@@ -73,6 +73,10 @@ struct SettingsView: View {
             if let launchError {
                 Text(launchError).font(.caption).foregroundStyle(.red)
             }
+            Toggle("Show a \"Saved\" flash by the notch after each copy", isOn: Binding(
+                get: { settings.showsSaveFlash },
+                set: { settings.setShowsSaveFlash($0) }
+            ))
             Toggle("Save screenshots (⇧⌘3 / ⇧⌘4 / ⇧⌘5)", isOn: Binding(
                 get: { model.savesScreenshots },
                 set: { model.setSavesScreenshots($0) }

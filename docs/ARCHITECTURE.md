@@ -1,6 +1,6 @@
 # MCAS architecture
 
-Updated with each feature. Last update: v0.2 (pin, search, retention, secret guard, settings).
+Updated with each feature. Last update: v0.3 (keyboard control, paste queue, smart types, save flash).
 
 ## How a copy travels
 
@@ -82,3 +82,16 @@ saves them as image items.
 - **Search focus**: clicking the search box makes the shelf key and activates MCAS so you can type;
   closing hands activation back to the app you came from (`NotchController.restoreFocusIfNeeded`),
   and `PasteService` waits until that app is in front before sending ⌘V.
+
+## v0.3 additions
+
+- **Keyboard control**: ⌥⌘V → `NotchController.open(.pinned, focusSearch: true)` makes the shelf key
+  and bumps `AppModel.searchFocusRequest`; `ShelfView` focuses its search field. Arrow keys move
+  `highlighted`, Return / ⇧Return / ⌘1–9 paste (handled with `onKeyPress` on the search field).
+- **Paste queue** (`Paste/PasteQueue.swift` + `AppModel.startQueue`): first item goes on the clipboard
+  (without reordering history); a global ⌘V key monitor swaps in the next item 0.25 s after each paste.
+  Needs Accessibility. Progress shows in the shelf banner and the menu bar icon ("2/5").
+- **Smart types** (`Shelf/SmartType.swift`): worked out from the text at display time (nothing stored,
+  no network): link → host + Open Link; color → swatch + Copy as HEX/RGB; email → New Email; code → monospaced.
+- **Save flash**: `AppModel.onSaved` → `NotchController.showSaveFlash()`, a click-through panel beside
+  the notch for ~1 s. Can be turned off in Settings.

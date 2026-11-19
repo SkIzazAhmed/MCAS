@@ -4,7 +4,9 @@
 //
 // Opening:
 //   • hover over the notch for 150 ms   → opens in "hover" mode
-//   • click the notch, or press ⌥⌘V     → opens in "pinned" mode (stays until dismissed)
+//   • click the notch                   → opens in "pinned" mode (stays until dismissed)
+//   • press ⌥⌘V                         → pinned, with the cursor in the search box
+//                                         (type, ↑↓, Return — no mouse needed)
 // Closing:
 //   • hover mode: the mouse leaves the shelf for 300 ms
 //   • any mode: Esc, clicking outside, picking an item, or ⌥⌘V again
@@ -36,6 +38,9 @@ final class NotchController {
     private let trigger: NotchPanel
     private let shelf: NotchPanel
     private let hoverView = HoverTrackingView()
+    /// The small "Saved" flash beside the notch after each copy.
+    private let flash = NotchPanel(contentRect: .zero)
+    private var flashGeneration = 0
 
     private var openMode: OpenMode?
     private var pendingOpen: DispatchWorkItem?
@@ -65,11 +70,15 @@ final class NotchController {
         // Clicked another app while typing: close, but don't pull focus back.
         shelf.onResignKey = { [weak self] in self?.close(restoreFocus: false) }
         shelf.onBecomeKey = { [weak self] in self?.startTyping() }
+
+        flash.ignoresMouseEvents = true
+        flash.contentView = NSHostingView(rootView: SaveFlashView())
     }
 
     func start() {
         layout()
         trigger.orderFrontRegardless()
+        model.onSaved = { [weak self] _ in self?.showSaveFlash() }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -100,15 +109,57 @@ final class NotchController {
         host.frame = NSRect(origin: .zero, size: frame.size)
         host.autoresizingMask = [.width, .height]
         shelf.contentView = host
+
+        flash.setFrame(flashFrame, display: false)
+    }
+
+    // MARK: - "Saved" flash
+
+    /// Right of the notch, same height (it looks like the notch grew a tab).
+    /// Below the tab on screens without a notch.
+    private var flashFrame: CGRect {
+        let n = geometry.notchRect
+        if geometry.hasNotch {
+            return CGRect(x: n.maxX - 12, y: n.minY, width: 92, height: n.height)
+        }
+        return CGRect(x: n.midX - 46, y: n.minY - 28, width: 92, height: 24)
+    }
+
+    private func showSaveFlash() {
+        guard !isOpen else { return } // you can already see it in the shelf
+        flashGeneration += 1
+        let generation = flashGeneration
+        flash.alphaValue = 0
+        flash.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.15
+            flash.animator().alphaValue = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.flashGeneration == generation else { return } // a newer copy took over
+                NSAnimationContext.runAnimationGroup({ context in
+                    context.duration = 0.3
+                    self.flash.animator().alphaValue = 0
+                }, completionHandler: { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.flashGeneration == generation else { return }
+                        self.flash.orderOut(nil)
+                    }
+                })
+            }
+        }
     }
 
     // MARK: - Open / close
 
     func toggleFromHotKey() {
-        if openMode == .pinned { close() } else { open(.pinned) }
+        if openMode == .pinned { close() } else { open(.pinned, focusSearch: true) }
     }
 
-    func open(_ mode: OpenMode) {
+    /// - Parameter focusSearch: put the cursor in the search box so you can type
+    ///   straight away (used by the shortcut).
+    func open(_ mode: OpenMode, focusSearch: Bool = false) {
         pendingOpen?.cancel()
         pendingOpen = nil
 
@@ -118,6 +169,7 @@ final class NotchController {
                 openMode = .pinned
                 stopLeaveTimer()
             }
+            if focusSearch { focusSearchBox() }
             return
         }
 
@@ -131,6 +183,7 @@ final class NotchController {
         shelf.orderFrontRegardless()
         if mode == .hover { startLeaveTimer() }
         startEventMonitors()
+        if focusSearch { focusSearchBox() }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             shelf.animator().alphaValue = 1
@@ -162,6 +215,14 @@ final class NotchController {
     }
 
     // MARK: - Typing in the search box
+
+    /// Makes the shelf take the keyboard (→ startTyping) and moves the cursor
+    /// into the search box.
+    private func focusSearchBox() {
+        flash.orderOut(nil)
+        shelf.makeKey()
+        model.requestSearchFocus()
+    }
 
     private func startTyping() {
         guard isOpen else { return }
@@ -298,5 +359,23 @@ struct NotchShelfView: View {
         )
         .environment(\.colorScheme, .dark)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// "✓ Saved": black like the notch, so it looks like the notch briefly grew.
+struct SaveFlashView: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            Text("Saved")
+                .foregroundStyle(.white)
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            UnevenRoundedRectangle(bottomTrailingRadius: 10, topTrailingRadius: 10, style: .continuous)
+                .fill(Color.black)
+        )
     }
 }

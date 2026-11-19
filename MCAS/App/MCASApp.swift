@@ -23,7 +23,13 @@ struct MCASApp: App {
             }
             .frame(width: 400)
         } label: {
-            Image(systemName: model.isPaused ? "pause.circle" : "list.clipboard")
+            // While a paste queue runs, the menu bar shows its progress, e.g. "2/5".
+            if let queue = model.queue {
+                Label(queue.shortLabel, systemImage: "list.number")
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Image(systemName: model.isPaused ? "pause.circle" : "list.clipboard")
+            }
         }
         // .window = a real panel that can scroll (the default .menu style can't hold a list).
         .menuBarExtraStyle(.window)

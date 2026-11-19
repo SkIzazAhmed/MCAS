@@ -30,6 +30,10 @@ final class AppModel {
     private(set) var needsAccessibility = false
     /// Shown in the shelf if the database could not be opened.
     private(set) var startupProblem: String?
+    /// The running "Paste as queue", if any.
+    private(set) var queue: PasteQueue?
+    /// Bumped to ask the shelf to put the cursor in the search box (⌥⌘V).
+    private(set) var searchFocusRequest = 0
 
     @ObservationIgnored let store: HistoryStore
     @ObservationIgnored let settings: AppSettings
@@ -39,6 +43,9 @@ final class AppModel {
     @ObservationIgnored private var maintenanceTimer: Timer?
     @ObservationIgnored private var lastRetentionRun = Date.distantPast
     @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+    @ObservationIgnored private var queueMonitor: Any?
+    /// Called after each copy is saved (the notch shows a small "Saved" flash).
+    @ObservationIgnored var onSaved: ((CapturedClip) -> Void)?
 
     init(store: HistoryStore, watcher: PasteboardWatcher, pasteService: PasteService, settings: AppSettings) {
         self.store = store
@@ -137,6 +144,7 @@ final class AppModel {
         do {
             try store.save(clip)
             reload()
+            if settings.showsSaveFlash { onSaved?(clip) }
         } catch {
             Log.storage.error("Saving failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -218,6 +226,7 @@ final class AppModel {
 
     /// Puts the item on the clipboard and pastes it into the app you were using.
     func paste(_ item: ClipItem) {
+        stopQueue()
         do {
             handle(try pasteService.paste(item))
             reload()
@@ -228,6 +237,7 @@ final class AppModel {
 
     /// Pastes only the words, without fonts, colors or links (F11).
     func pastePlainText(_ item: ClipItem) {
+        stopQueue()
         do {
             handle(try pasteService.pastePlainText(item))
             reload()
@@ -238,6 +248,7 @@ final class AppModel {
 
     /// Joins several items (in the order given) and pastes them at once.
     func pasteTogether(_ items: [ClipItem], separator: PasteSeparator) {
+        stopQueue()
         do {
             handle(try pasteService.pasteTogether(items, separator: separator.string))
         } catch {
@@ -250,6 +261,80 @@ final class AppModel {
             needsAccessibility = true
             requestAccessibility()
         }
+    }
+
+    // MARK: - Paste queue (each ⌘V pastes the next item)
+
+    /// Puts the first item on the clipboard; each ⌘V you press swaps in the next.
+    /// Watching for ⌘V in other apps needs the Accessibility permission.
+    func startQueue(_ items: [ClipItem]) {
+        stopQueue()
+        guard let newQueue = PasteQueue(items: items), let first = newQueue.current else { return }
+        guard AXIsProcessTrusted() else {
+            needsAccessibility = true
+            requestAccessibility()
+            Log.paste.notice("Paste queue needs Accessibility to notice ⌘V")
+            return
+        }
+        do {
+            try pasteService.copyToClipboard(first, bump: false)
+        } catch {
+            Log.paste.error("Queue start failed: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        queue = newQueue
+        queueMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Plain ⌘V only (Caps Lock doesn't matter; ⇧⌘V etc. are other commands).
+            let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            let isPaste = flags == .command && event.charactersIgnoringModifiers?.lowercased() == "v"
+            guard isPaste else { return }
+            // Give the app a moment to read the clipboard before swapping in the next item.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                MainActor.assumeIsolated { self?.advanceQueue() }
+            }
+        }
+        Log.paste.info("Paste queue started with \(items.count) items")
+    }
+
+    func stopQueue() {
+        if let queueMonitor { NSEvent.removeMonitor(queueMonitor) }
+        queueMonitor = nil
+        if queue != nil { Log.paste.info("Paste queue stopped") }
+        queue = nil
+    }
+
+    private func advanceQueue() {
+        guard var current = queue else { return }
+        guard let next = current.advance() else {
+            stopQueue() // last item pasted: done
+            return
+        }
+        queue = current
+        do {
+            try pasteService.copyToClipboard(next, bump: false)
+        } catch {
+            Log.paste.error("Queue step failed: \(error.localizedDescription, privacy: .public)")
+            stopQueue()
+        }
+    }
+
+    // MARK: - Quick actions (smart types)
+
+    func copyText(_ text: String) {
+        pasteService.copyText(text)
+    }
+
+    func open(_ url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func newEmail(to address: String) {
+        if let url = URL(string: "mailto:\(address)") { NSWorkspace.shared.open(url) }
+    }
+
+    /// Asks the shelf to put the cursor in the search box.
+    func requestSearchFocus() {
+        searchFocusRequest += 1
     }
 
     // MARK: - Accessibility (needed only to press ⌘V for you)
